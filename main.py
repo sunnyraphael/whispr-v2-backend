@@ -400,13 +400,24 @@ def signup(data: dict):
         if ban_snap:
             raise HTTPException(status_code=403, detail="This device has been banned from creating new accounts.")
 
-        # One account per device
+           # Check bypass list — emails in this list can create multiple accounts
+    bypass_list = []
+    try:
+        bypass_snap = db.collection("settings").document("bypassEmails").get()
+        if bypass_snap.exists:
+            bypass_list = bypass_snap.to_dict().get("emails", [])
+    except:
+        pass
+
+    is_bypass = email in [e.lower() for e in bypass_list]
+
+    # One account per device — skip for bypass emails
+    if not is_bypass:
         existing_snap = db.collection("users").where(
             "deviceFingerprint", "==", fingerprint
         ).limit(1).get()
         if existing_snap:
             raise HTTPException(status_code=403, detail="An account already exists from this device. Only one account is allowed per device.")
-
     # Create Firebase Auth account
     try:
         user_record = firebase_auth.create_user(
