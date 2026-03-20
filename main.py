@@ -430,8 +430,18 @@ def signup(data: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
     # Generate random anonymous username
-    adjectives = ["Silent", "Hidden", "Mystic", "Shadow", "Calm", "Swift", "Bright", "Bold", "Clever", "Witty"]
-    nouns = ["Falcon", "River", "Storm", "Panda", "Comet", "Tiger", "Ocean", "Phoenix", "Wolf", "Eagle"]
+    adjectives = ["Silent", "Hidden", "Mystic", "Shadow", "Calm", "Swift", "Bright", "Bold", "Clever", "Witty",
+    "Lunar", "Solar", "Cosmic", "Neon", "Arctic", "Storm", "Thunder", "Crystal", "Phantom", "Velvet",
+    "Crimson", "Azure", "Golden", "Silver", "Midnight", "Whispering", "Fierce", "Gentle", "Brave", "Wandering",
+    "Frozen", "Blazing", "Electric", "Radiant", "Stealth", "Ancient", "Eternal", "Vivid", "Serene", "Wild",
+    "Hollow", "Shining", "Daring", "Restless", "Fading", "Rising", "Broken", "Fearless", "Cursed", "Sacred"
+]
+    nouns = ["Fox", "Wolf", "Raven", "Phoenix", "Falcon", "Owl", "Bear", "Tiger", "Lynx", "Hawk",
+    "Panda", "Jaguar", "Viper", "Eagle", "Poet", "Ghost", "Rebel", "Sage", "Nomad", "Oracle",
+    "Cipher", "Specter", "Wraith", "Monk", "Bard", "Scout", "Ranger", "Knight", "Rogue", "Serpent",
+    "Comet", "River", "Storm", "Ocean", "Flame", "Ember", "Shadow", "Spark", "Frost", "Tide",
+    "Drifter", "Hunter", "Seeker", "Watcher", "Wanderer", "Striker", "Dreamer", "Fighter", "Runner", "Keeper"
+]
     username = f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 99)}"
 
     # Write user doc to Firestore
