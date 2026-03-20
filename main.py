@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from firebase import db
 from auth import verify_token
-from rate_limit import check_post_rate_limit
+from rate_limit import check_post_rate_limit, check_comment_rate_limit
 from firebase_admin import firestore
 import uuid
 from datetime import datetime, timezone
