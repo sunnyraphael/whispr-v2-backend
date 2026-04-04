@@ -50,8 +50,8 @@ def send_push(to_uid: str, title: str, body: str, data: dict = None):
             ),
         )
         messaging.send(message)
-    except Exception:
-        pass  # never let a push failure break the main API response
+    except Exception as e:
+        print(f"[FCM ERROR] {e}")  # temporary — remove after fixing
 
 
 @app.post("/save-fcm-token")
