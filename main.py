@@ -46,12 +46,12 @@ def send_push(to_uid: str, title: str, body: str, data: dict = None):
                     icon="/android-chrome-192x192.png",
                     badge="/android-chrome-192x192.png",
                 ),
-                fcm_options=messaging.WebpushFCMOptions(link="/"),
+                fcm_options=messaging.WebpushFCMOptions(link="https://whispr-app.netlify.app/"),
             ),
         )
         messaging.send(message)
-    except Exception as e:
-        print(f"[FCM ERROR] {e}")  # temporary — remove after fixing
+    except Exception:
+        pass
 
 
 @app.post("/save-fcm-token")
