@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from firebase import db
 from auth import verify_token
 from rate_limit import check_post_rate_limit, check_comment_rate_limit
-from firebase_admin import firestore
+from firebase_admin import firestore, messaging
 import uuid
 from datetime import datetime, timezone
 
@@ -23,6 +23,46 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {"message": "Whispr backend is running"}
+
+
+# ─── PUSH NOTIFICATION HELPER ─────────────────────────────────────────────────
+def send_push(to_uid: str, title: str, body: str, data: dict = None):
+    """Send FCM push to a user. Silently ignores errors so pushes never break requests."""
+    try:
+        user_snap = db.collection("users").document(to_uid).get()
+        if not user_snap.exists:
+            return
+        fcm_token = user_snap.to_dict().get("fcmToken")
+        if not fcm_token:
+            return  # user hasn't granted permission yet
+        message = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            data={k: str(v) for k, v in (data or {}).items()},
+            token=fcm_token,
+            webpush=messaging.WebpushConfig(
+                notification=messaging.WebpushNotification(
+                    title=title,
+                    body=body,
+                    icon="/android-chrome-192x192.png",
+                    badge="/android-chrome-192x192.png",
+                ),
+                fcm_options=messaging.WebpushFCMOptions(link="/"),
+            ),
+        )
+        messaging.send(message)
+    except Exception:
+        pass  # never let a push failure break the main API response
+
+
+@app.post("/save-fcm-token")
+def save_fcm_token(data: dict, uid: str = Depends(verify_token)):
+    """Called by the frontend when a user grants notification permission."""
+    from fastapi import HTTPException
+    token = data.get("token", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="FCM token is required.")
+    db.collection("users").document(uid).update({"fcmToken": token})
+    return {"message": "FCM token saved."}
 
 @app.post("/post")
 def create_post(data: dict, uid: str = Depends(verify_token)):
@@ -118,6 +158,24 @@ def toggle_like(data: dict, uid: str = Depends(verify_token)):
             "likes": firestore.Increment(1),
             "score": firestore.Increment(2),
         })
+        # Notify post owner
+        post_owner_uid = post_data.get("uid")
+        liker_username = user.get("username", "Someone")
+        if post_owner_uid and post_owner_uid != uid:
+            db.collection("notifications").add({
+                "toUid": post_owner_uid,
+                "fromUsername": liker_username,
+                "type": "like",
+                "postId": post_id,
+                "read": False,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            })
+            send_push(
+                to_uid=post_owner_uid,
+                title="❤️ New Like",
+                body=f"{liker_username} liked your post",
+                data={"type": "like", "postId": post_id},
+            )
         return {"message": "Liked", "liked": True}
 
 
@@ -167,16 +225,43 @@ def add_comment(data: dict, uid: str = Depends(verify_token)):
 
     # Send notification to post owner
     post = db.collection("posts").document(post_id).get().to_dict()
+    commenter_username = user.get("username", "Someone")
     if post and post.get("uid") != uid:
+        post_owner_uid = post.get("uid")
         db.collection("notifications").add({
-            "toUid": post.get("uid"),
-            "fromUsername": user.get("username"),
+            "toUid": post_owner_uid,
+            "fromUsername": commenter_username,
             "type": "comment",
             "postId": post_id,
             "commentId": comment_ref[1].id,
             "read": False,
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
+        send_push(
+            to_uid=post_owner_uid,
+            title="💬 New Comment",
+            body=f"{commenter_username}: {text[:80]}{'...' if len(text) > 80 else ''}",
+            data={"type": "comment", "postId": post_id},
+        )
+
+    # Also notify parent comment owner if this is a reply
+    if parent_id and post:
+        parent = db.collection("comments").document(parent_id).get().to_dict()
+        if parent and parent.get("uid") != uid and parent.get("uid") != post.get("uid"):
+            db.collection("notifications").add({
+                "toUid": parent.get("uid"),
+                "fromUsername": commenter_username,
+                "type": "reply_comment",
+                "postId": post_id,
+                "read": False,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            })
+            send_push(
+                to_uid=parent.get("uid"),
+                title="↩️ New Reply",
+                body=f"{commenter_username} replied to your comment",
+                data={"type": "reply", "postId": post_id},
+            )
 
     return {"message": "Comment added", "commentId": comment_id}
 
@@ -211,15 +296,22 @@ def add_reaction(data: dict, uid: str = Depends(verify_token)):
         update_data[f"userReactions.{uid}"] = emoji
         # Notify post owner
         if post.get("uid") != uid:
+            reactor_username = user.get("username", "Someone")
             db.collection("notifications").add({
                 "toUid": post.get("uid"),
-                "fromUsername": user.get("username"),
+                "fromUsername": reactor_username,
                 "type": "react",
                 "emoji": emoji,
                 "postId": post_id,
                 "read": False,
                 "createdAt": firestore.SERVER_TIMESTAMP,
             })
+            send_push(
+                to_uid=post.get("uid"),
+                title=f"{emoji} New Reaction",
+                body=f"{reactor_username} reacted {emoji} to your post",
+                data={"type": "react", "postId": post_id},
+            )
     else:
         # Same emoji clicked — remove reaction
         update_data[f"userReactions.{uid}"] = firestore.DELETE_FIELD
@@ -398,7 +490,12 @@ def signup(data: dict):
             "fingerprint", "==", fingerprint
         ).limit(1).get()
         if ban_snap:
-            raise HTTPException(status_code=403, detail="This device has been banned from creating new accounts.")
+            # Check if admin has whitelisted this device
+            whitelist_snap = db.collection("deviceWhitelist").where(
+                "fingerprint", "==", fingerprint
+            ).limit(1).get()
+            if not whitelist_snap:
+                raise HTTPException(status_code=403, detail="This device has been banned from creating new accounts.")
 
            # Check bypass list — emails in this list can create multiple accounts
     bypass_list = []
@@ -411,13 +508,17 @@ def signup(data: dict):
 
     is_bypass = email in [e.lower() for e in bypass_list]
 
-    # One account per device — skip for bypass emails
+    # One account per device — skip for bypass emails and whitelisted devices
     if not is_bypass:
-        existing_snap = db.collection("users").where(
-            "deviceFingerprint", "==", fingerprint
+        whitelist_snap = db.collection("deviceWhitelist").where(
+            "fingerprint", "==", fingerprint
         ).limit(1).get()
-        if existing_snap:
-            raise HTTPException(status_code=403, detail="An account already exists from this device. Only one account is allowed per device.")
+        if not whitelist_snap:
+            existing_snap = db.collection("users").where(
+                "deviceFingerprint", "==", fingerprint
+            ).limit(1).get()
+            if existing_snap:
+                raise HTTPException(status_code=403, detail="An account already exists from this device. Only one account is allowed per device.")
     # Create Firebase Auth account
     try:
         user_record = firebase_auth.create_user(
