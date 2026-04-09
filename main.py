@@ -506,10 +506,10 @@ def signup(data: dict):
     except:
         pass
 
-    is_bypass = email.lower() in [e.lower() for e in bypass_list]
+    is_bypass = email in [e.lower() for e in bypass_list]
 
     # One account per device — skip for bypass emails and whitelisted devices
-    if fingerprint and not is_bypass:
+    if not is_bypass:
         whitelist_snap = db.collection("deviceWhitelist").where(
             "fingerprint", "==", fingerprint
         ).limit(1).get()
@@ -561,5 +561,16 @@ def signup(data: dict):
         "termsAcceptedAt": firestore.SERVER_TIMESTAMP,
     }
     db.collection("users").document(user_record.uid).set(profile_data)
+
+    # Remove from whitelist after successful signup — one-time use only
+    if fingerprint:
+        try:
+            wl_snap = db.collection("deviceWhitelist").where(
+                "fingerprint", "==", fingerprint
+            ).limit(1).get()
+            for wl_doc in wl_snap:
+                wl_doc.reference.delete()
+        except:
+            pass  # Don't block signup if cleanup fails
 
     return {"message": "Account created successfully", "uid": user_record.uid, "username": username}
