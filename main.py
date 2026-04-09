@@ -506,10 +506,10 @@ def signup(data: dict):
     except:
         pass
 
-    is_bypass = email in [e.lower() for e in bypass_list]
+    is_bypass = email.lower() in [e.lower() for e in bypass_list]
 
     # One account per device — skip for bypass emails and whitelisted devices
-    if not is_bypass:
+    if fingerprint and not is_bypass:
         whitelist_snap = db.collection("deviceWhitelist").where(
             "fingerprint", "==", fingerprint
         ).limit(1).get()
