@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from firebase import db
 from auth import verify_token
@@ -436,6 +436,18 @@ def ban_user(data: dict, uid: str = Depends(verify_token)):
             "createdAt": firestore.SERVER_TIMESTAMP,
         })
 
+    # Add IP to ipBans — catches browser-switchers on same data connection
+    ip = target.get("ipAddress")
+    if ip:
+        existing_ip_ban = db.collection("ipBans").where("ip", "==", ip).limit(1).get()
+        if not existing_ip_ban:
+            db.collection("ipBans").add({
+                "ip": ip,
+                "bannedUid": target_uid,
+                "reason": reason,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+            })
+
     # Send ban notification to user
     db.collection("notifications").add({
         "toUid": target_uid,
@@ -469,8 +481,60 @@ def unban_user(data: dict, uid: str = Depends(verify_token)):
     })
 
     return {"message": "User unbanned successfully."}
+
+
+@app.post("/admin/delete-account")
+def delete_account(data: dict, uid: str = Depends(verify_token)):
+    from fastapi import HTTPException
+    from firebase_admin import auth as firebase_auth
+
+    caller = db.collection("users").document(uid).get().to_dict()
+    if caller.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+
+    target_uid = data.get("targetUid")
+    if not target_uid:
+        raise HTTPException(status_code=400, detail="targetUid is required.")
+    if target_uid == uid:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+
+    # Delete all posts by this user
+    posts = db.collection("posts").where("uid", "==", target_uid).get()
+    for p in posts:
+        p.reference.delete()
+
+    # Delete all comments by this user
+    comments = db.collection("comments").where("uid", "==", target_uid).get()
+    for c in comments:
+        c.reference.delete()
+
+    # Delete all notifications for this user
+    notifs = db.collection("notifications").where("toUid", "==", target_uid).get()
+    for n in notifs:
+        n.reference.delete()
+
+    # Delete all reports made by or about this user
+    reports_by = db.collection("reports").where("reporterUid", "==", target_uid).get()
+    for r in reports_by:
+        r.reference.delete()
+    reports_about = db.collection("reports").where("targetUid", "==", target_uid).get()
+    for r in reports_about:
+        r.reference.delete()
+
+    # Delete user document from Firestore
+    db.collection("users").document(target_uid).delete()
+
+    # Delete Firebase Auth account
+    try:
+        firebase_auth.delete_user(target_uid)
+    except Exception:
+        pass  # Do not block if auth deletion fails
+
+    return {"message": "Account and all associated data deleted successfully."}
+
+
 @app.post("/signup")
-def signup(data: dict):
+def signup(data: dict, request: Request):
     from fastapi import HTTPException
     from firebase_admin import auth as firebase_auth
     import random
@@ -478,13 +542,26 @@ def signup(data: dict):
     email = data.get("email", "").strip().lower()
     password = data.get("password", "")
     fingerprint = data.get("fingerprint", "")
+    ip_address = request.headers.get("X-Forwarded-For", request.client.host or "").split(",")[0].strip()
 
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email and password are required.")
     if len(password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
 
-    # Check device ban first
+    # Check IP ban
+    if ip_address:
+        ip_ban_snap = db.collection("ipBans").where(
+            "ip", "==", ip_address
+        ).limit(1).get()
+        if ip_ban_snap:
+            whitelist_snap = db.collection("deviceWhitelist").where(
+                "fingerprint", "==", fingerprint
+            ).limit(1).get()
+            if not whitelist_snap:
+                raise HTTPException(status_code=403, detail="This device has been banned from creating new accounts.")
+
+    # Check device fingerprint ban
     if fingerprint:
         ban_snap = db.collection("deviceBans").where(
             "fingerprint", "==", fingerprint
@@ -557,6 +634,7 @@ def signup(data: dict):
         "lastPostAt": None,
         "bookmarks": [],
         "deviceFingerprint": fingerprint,
+        "ipAddress": ip_address,
         "createdAt": firestore.SERVER_TIMESTAMP,
         "termsAcceptedAt": firestore.SERVER_TIMESTAMP,
     }
